@@ -1,0 +1,5 @@
+langchain
+langchain-openai
+langchain-pinecone
+tavily-python
+python-dotenv
