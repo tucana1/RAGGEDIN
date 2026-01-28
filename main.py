@@ -1,189 +1,335 @@
 #!/usr/bin/env python3
 """
-RAG Agent for LinkedIn post brainstorming.
-This script demonstrates how to create a LangChain agent that combines
-Pinecone vector store retrieval with Tavily web search to generate viral LinkedIn posts.
+Interactive RAG Agent for LinkedIn (Gemini Version).
+- Scans folder for ANY file matching 'notes*.txt'
+- Auto-generates a post on startup
+- Stores data persistently in Pinecone across sessions
 """
 
 import os
+import glob
+import sys
+import time
 from dotenv import load_dotenv
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+
+#CORE LANGCHAIN & GEMINI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_pinecone import PineconeVectorStore
+
+#TOOLS & AGENTS
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain.tools.retriever import create_retriever_tool
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import create_retriever_tool, tool
+#PRESERVED USER IMPORT:
+from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
+
+#PROMPTS & MESSAGES
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+
+#PINECONE
 from pinecone import Pinecone, ServerlessSpec
 
 
 def load_environment():
     """Load environment variables from .env file."""
     load_dotenv()
-    
-    # Verify required environment variables
-    required_vars = ["OPENAI_API_KEY", "PINECONE_API_KEY", "TAVILY_API_KEY"]
-    for var in required_vars:
-        if not os.getenv(var):
-            raise ValueError(f"Missing required environment variable: {var}")
-    
-    print("✓ Environment variables loaded successfully")
+    required_vars = ["GOOGLE_API_KEY", "PINECONE_API_KEY", "TAVILY_API_KEY"]
+    missing = [var for var in required_vars if not os.getenv(var)]
+    if missing:
+        raise ValueError(f"Missing environment variables: {', '.join(missing)}")
+    print("Environment variables loaded successfully")
 
 
-def ingest_sample_data():
-    """Ingest sample text into Pinecone serverless index."""
-    print("\n📝 Starting data ingestion...")
+def load_all_notes():
+    """Reads lines from ALL files starting with 'notes' ending in .txt."""
+    #Matches notes.txt, notes0.txt, notes1.txt, notes_draft.txt, etc.
+    files = glob.glob("notes*.txt")
     
-    # Initialize Pinecone
+    if not files:
+        print("No 'notes*.txt' files found. Creating a sample 'notes.txt'...")
+        with open("notes.txt", "w") as f:
+            f.write("Tip: Authenticity is key on LinkedIn.\n")
+            f.write("Tip: Post between 8am and 10am.\n")
+            f.write("My thought: AI agents are the next big thing.\n")
+        files = ["notes.txt"]
+
+    all_lines = []
+    print(f"\nFound {len(files)} note files: {files}")
+    
+    for filename in files:
+        try:
+            with open(filename, "r") as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+                all_lines.extend(lines)
+                print(f"   - Loaded {len(lines)} lines from {filename}")
+        except Exception as e:
+            print(f"   x Error reading {filename}: {e}")
+    
+    if not all_lines:
+        raise ValueError("All notes files were empty! Please add content.")
+        
+    return all_lines
+
+
+def ingest_data(notes):
+    """
+    Ingest text data into Pinecone using Gemini Embeddings (3072 dim).
+    
+    PERSISTENCE BEHAVIOR:
+    1. Data is ADDED to the Pinecone index, not replaced.
+    2. If the index exists from a previous run, new notes are appended.
+    3. The index persists across sessions - old vectors remain unless manually deleted.
+    4. Pinecone is a cloud vector database, so all stored data is persistent.
+    """
+    print(f"\nIngesting {len(notes)} total notes...")
+    
     pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+    index_name = "linkedin-agent-gemini-v2"
     
-    # Index configuration
-    index_name = "linkedin-posts"
-    dimension = 1536  # OpenAI embedding dimension
+    #Check if index exists
+    existing_indexes = [i.name for i in pc.list_indexes()]
     
-    # Create index if it doesn't exist
-    if index_name not in pc.list_indexes().names():
-        print(f"Creating Pinecone index: {index_name}")
+    if index_name in existing_indexes:
+        #SAFETY CHECK: Verify dimensions
+        try:
+            index_description = pc.describe_index(index_name)
+            if index_description.dimension != 3072:
+                print(f"Found index with dimension {index_description.dimension}. Rebuilding as 3072...")
+                pc.delete_index(index_name)
+                time.sleep(5) 
+                existing_indexes.remove(index_name)
+        except Exception as e:
+            print(f"Warning checking index: {e}")
+
+    #Create index with 3072 dimensions if missing
+    if index_name not in existing_indexes:
+        print(f"Creating index: {index_name} (Dimension: 3072)")
         pc.create_index(
             name=index_name,
-            dimension=dimension,
+            dimension=3072,
             metric="cosine",
-            spec=ServerlessSpec(
-                cloud="aws",
-                region="us-east-1"
-            )
+            spec=ServerlessSpec(cloud="aws", region="us-east-1")
         )
-        print(f"✓ Index '{index_name}' created")
-    else:
-        print(f"✓ Index '{index_name}' already exists")
+        while not pc.describe_index(index_name).status['ready']:
+            time.sleep(1)
     
-    # Sample LinkedIn post ideas and content
-    sample_texts = [
-        "LinkedIn engagement tip: Start your posts with a hook that creates curiosity. Ask a question or share a surprising fact.",
-        "Viral LinkedIn posts often include personal stories. Share your failures and lessons learned - authenticity drives engagement.",
-        "The best time to post on LinkedIn is Tuesday through Thursday, between 8-10 AM and 12-2 PM when professionals check their feeds.",
-        "Use short paragraphs and line breaks in LinkedIn posts. White space makes content more readable and increases engagement by 30%.",
-        "Add a call-to-action at the end of your posts. Ask readers to share their thoughts or tag someone who needs to see this.",
-        "LinkedIn carousel posts get 3x more engagement than regular posts. Break down complex topics into visual slides.",
-        "Hashtags still matter on LinkedIn. Use 3-5 relevant hashtags to increase discoverability without looking spammy.",
-        "Comment on others' posts before sharing your own. This warms up the algorithm and builds genuine connections.",
-        "Video content on LinkedIn gets 5x more engagement. Don't worry about production quality - authenticity wins.",
-        "Document your journey, don't just share the highlights. People connect with the process, not just the outcome.",
-    ]
+    #Use Gemini embeddings
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-001",
+        google_api_key=os.getenv("GOOGLE_API_KEY")
+    )
     
-    # Initialize embeddings and vector store
-    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-    
-    # Add documents to Pinecone
+    #Ingest or append to existing index
     vector_store = PineconeVectorStore.from_texts(
-        texts=sample_texts,
+        texts=notes,
         embedding=embeddings,
         index_name=index_name
     )
-    
-    print(f"✓ Ingested {len(sample_texts)} sample documents into Pinecone")
-    
+    print("Notes stored in Pinecone (persistent across sessions)")
     return vector_store
 
 
+def clean_agent_output(output):
+    """Remove signature, extras, and other junk from agent output."""
+    import re
+    
+    #Handle if output is a list (convert to string)
+    if isinstance(output, list):
+        text = '\n'.join(str(item) for item in output)
+    else:
+        text = str(output)
+    
+    #Split by common markers
+    lines = text.split('\n')
+    cleaned_lines = []
+    
+    for line in lines:
+        #Skip lines containing signature indicators
+        if any(marker in line for marker in ['signature', 'extras', 'CiIB', 'gEBc']):
+            continue
+        #Skip lines that are just base64-like strings
+        if len(line) > 100 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in line.replace('\n', '')):
+            continue
+        cleaned_lines.append(line)
+    
+    #Join back and clean up excessive whitespace
+    result = '\n'.join(cleaned_lines).strip()
+    
+    #Remove any remaining encoded signature blocks
+    result = re.sub(r"'signature':\s*'[^']*'", '', result)
+    result = re.sub(r'"signature":\s*"[^"]*"', '', result)
+    
+    return result
+
+
 def setup_agent(vector_store):
-    """Setup LangChain agent with Pinecone retriever and Tavily search tools."""
-    print("\n🤖 Setting up LangChain agent...")
+    """Setup the Agent with Memory capabilities and CLEAN search."""
+    print("\nInitializing Agent...")
     
-    # Initialize LLM
-    llm = ChatOpenAI(model="gpt-4", temperature=0.7)
+    #Use the specific model requested
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-3-flash-preview",
+        temperature=0.7,
+        convert_system_message_to_human=True
+    )
     
-    # Create retriever tool from Pinecone
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+    #TOOL 1: Retriever
     retriever_tool = create_retriever_tool(
-        retriever,
-        name="linkedin_notes_retriever",
-        description="Search through curated LinkedIn post best practices and tips. Use this to find proven strategies for creating engaging LinkedIn content."
+        vector_store.as_retriever(search_kwargs={"k": 5}),
+        name="search_my_notes",
+        description="Searches the user's personal notes and indexed web results. ALWAYS search this first."
     )
     
-    # Create Tavily search tool for web search
-    tavily_search = TavilySearchResults(
-        max_results=3,
-        description="Search the web for current trends, news, and information. Use this to find trending topics and recent events for LinkedIn posts."
-    )
-    
-    # Combine tools
-    tools = [retriever_tool, tavily_search]
-    
-    # Create prompt template
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a LinkedIn content expert specializing in creating viral posts.
+    #TOOL 2: CLEAN Search (Checks Pinecone first, then searches web and indexes results)
+    @tool
+    def search_web(query: str):
+        """Search web for recent news. Checks Pinecone first, then searches web and indexes results."""
+        #First check if this query exists in Pinecone
+        existing_results = vector_store.similarity_search(query, k=3)
         
-Your goal is to help users create engaging LinkedIn posts by:
-1. Searching through curated best practices using the linkedin_notes_retriever
-2. Finding current trends and topics using web search
-3. Combining both sources to craft compelling, authentic content
+        if existing_results:
+            print(f"Found cached results in Pinecone for: {query}")
+            cached_text = "\n".join([f"Cached: {result.page_content}" for result in existing_results])
+            return cached_text
+        
+        #If not in Pinecone, search the web
+        tavily = TavilySearchResults(max_results=2)
+        raw_results = tavily.invoke(query)
+        
+        #Strip all extraneous data (signature, extras, images, raw_content, etc.)
+        clean_results = []
+        texts_to_index = []
+        
+        if isinstance(raw_results, list):
+            for item in raw_results:
+                #Only extract url and content, discard everything else
+                if isinstance(item, dict):
+                    url = item.get("url", "")
+                    content = item.get("content", "")
+                    
+                    #Only include if we have actual content
+                    if url and content:
+                        #Limit content to avoid overwhelming the LLM
+                        content_limited = content[:500]
+                        clean_results.append({
+                            "url": url,
+                            "content": content_limited
+                        })
+                        #Store for indexing with source attribution
+                        texts_to_index.append(f"Web Search Result - Query: {query}\nSource: {url}\nContent: {content_limited}")
+        
+        #Index the web results to Pinecone for future searches
+        if texts_to_index:
+            try:
+                embeddings = GoogleGenerativeAIEmbeddings(
+                    model="models/gemini-embedding-001",
+                    google_api_key=os.getenv("GOOGLE_API_KEY")
+                )
+                vector_store.add_texts(texts_to_index)
+                print(f"Indexed {len(texts_to_index)} web results to Pinecone")
+            except Exception as e:
+                print(f"Warning: Could not index web results: {e}")
+        
+        #Return as plain formatted text (not dict) to prevent metadata leakage
+        if clean_results:
+            output_lines = []
+            for result in clean_results:
+                output_lines.append(f"Source: {result['url']}")
+                output_lines.append(f"Content: {result['content']}\n")
+            return "\n".join(output_lines)
+        
+        return "No web results found."
 
-When creating posts:
-- Use short paragraphs and line breaks for readability
-- Start with a strong hook
-- Include personal insights or stories
-- End with a clear call-to-action
-- Keep it professional yet authentic
-
-Always cite your sources and explain your reasoning."""),
+    tools = [retriever_tool, search_web]
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a viral LinkedIn ghostwriter. 
+        1. Search the user's notes first to find their core idea.
+        2. Search the web for recent news to back it up.
+        3. Write a compelling, authentic LinkedIn post.
+        
+        If the user gives feedback, modify the previous post accordingly.
+        
+        IMPORTANT: Only present clean, formatted content to the user. Do not show raw data structures, signatures, or metadata."""),
+        
+        MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}")
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
     
-    # Create agent
     agent = create_tool_calling_agent(llm, tools, prompt)
     
-    # Create agent executor
-    agent_executor = AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=True,
-        handle_parsing_errors=True
-    )
-    
-    print("✓ Agent created with Retriever and TavilySearchResults tools")
-    
-    return agent_executor
+    return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 
 def main():
-    """Main execution function."""
-    print("=" * 60)
-    print("🚀 RAG Agent for LinkedIn Post Brainstorming")
-    print("=" * 60)
+    print("=" * 50)
+    print("Interactive LinkedIn Agent (Gemini + Auto-Start)")
+    print("Type 'exit' or 'quit' to stop.")
+    print("=" * 50)
     
     try:
-        # Step 1: Load environment variables
         load_environment()
         
-        # Step 2: Ingest sample data into Pinecone
-        vector_store = ingest_sample_data()
+        #Load notes from ALL matching files
+        notes = load_all_notes()
         
-        # Step 3: Setup agent with tools
+        #Ingest
+        vector_store = ingest_data(notes)
+        
+        #Setup Agent
         agent_executor = setup_agent(vector_store)
         
-        # Step 4: Execute sample query
-        print("\n" + "=" * 60)
-        print("📱 Executing Sample Query")
-        print("=" * 60)
+        #AUTO-START: Generate first post immediately
+        print("\nAUTOMATIC STARTUP: Generating proposal based on your notes...")
+        chat_history = [] 
         
-        sample_query = """Write a viral LinkedIn post about the importance of AI skills in 2024. 
-        Use both the curated best practices and current web trends to make it engaging."""
+        initial_prompt = "Look through my notes and create a high-impact LinkedIn post proposal based on the most interesting idea you find."
         
-        print(f"\nQuery: {sample_query}\n")
+        response = agent_executor.invoke({
+            "input": initial_prompt,
+            "chat_history": chat_history
+        })
         
-        response = agent_executor.invoke({"input": sample_query})
+        output_text = response["output"]
         
-        print("\n" + "=" * 60)
-        print("✨ GENERATED LINKEDIN POST")
-        print("=" * 60)
-        print(response["output"])
-        print("=" * 60)
+        #Strip signature and extras from output
+        clean_output = clean_agent_output(output_text)
+        print(f"\nAGENT:\n{clean_output}\n")
         
-    except Exception as e:
-        print(f"\n❌ Error: {str(e)}")
-        raise
+        #Save to history so the loop knows about it
+        chat_history.append(HumanMessage(content=initial_prompt))
+        chat_history.append(AIMessage(content=clean_output))
+        
+        #Interactive Loop
+        while True:
+            user_input = input("\nTopic or Feedback > ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in ["exit", "quit"]:
+                print("Goodbye!")
+                break
+            
+            print("\nThinking...")
+            
+            response = agent_executor.invoke({
+                "input": user_input,
+                "chat_history": chat_history
+            })
+            
+            output_text = response["output"]
+            
+            #Strip signature and extras from output
+            clean_output = clean_agent_output(output_text)
+            print(f"\nAGENT:\n{clean_output}\n")
+            
+            chat_history.append(HumanMessage(content=user_input))
+            chat_history.append(AIMessage(content=clean_output))
 
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

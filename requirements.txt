@@ -1,5 +1,9 @@
 langchain
 langchain-openai
 langchain-pinecone
+langchain-community
+pinecone
 tavily-python
 python-dotenv
+langchain-classic
+langchain-google-genai
