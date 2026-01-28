@@ -189,56 +189,74 @@ def setup_agent(vector_store):
     )
     
     #TOOL 2: CLEAN Search (Checks Pinecone first, then searches web and indexes results)
+    # TOOL 2: CLEAN Search (Checks Pinecone first, then searches web)
     @tool
     def search_web(query: str):
-        """Search web for recent news. Checks Pinecone first, then searches web and indexes results."""
-        #First check if this query exists in Pinecone
-        existing_results = vector_store.similarity_search(query, k=3)
+        """Search web for recent news. Checks Pinecone first with strict matching, then searches web."""
         
-        if existing_results:
-            print(f"Found cached results in Pinecone for: {query}")
-            cached_text = "\n".join([f"Cached: {result.page_content}" for result in existing_results])
-            return cached_text
+        # 1. DEFINE THRESHOLD (0.0 to 1.0)
+        # 0.8 is strict (good for "exact topic match")
+        # 0.7 is looser (good for "related concepts")
+        SCORE_THRESHOLD = 0.80 
+
+        # 2. SEARCH WITH SCORE
+        # We fetch k=1 just to check if the best match is good enough
+        results_with_scores = vector_store.similarity_search_with_score(query, k=1)
         
-        #If not in Pinecone, search the web
+        # 3. EVALUATE SCORES
+        # results_with_scores is a list of tuples: [(Document, float_score), ...]
+        is_cached_valid = False
+        cached_content = ""
+
+        if results_with_scores:
+            best_doc, best_score = results_with_scores[0]
+            print(f"   > Cache Check: '{query}' | Best Score: {best_score:.4f} (Threshold: {SCORE_THRESHOLD})")
+            
+            if best_score >= SCORE_THRESHOLD:
+                print("   > High confidence match found in cache. Skipping web search.")
+                is_cached_valid = True
+                cached_content = f"Cached (Score {best_score:.2f}): {best_doc.page_content}"
+            else:
+                print("   > Match score too low. Ignoring cache.")
+
+        if is_cached_valid:
+            return cached_content
+        
+        # --- FALLBACK TO WEB SEARCH ---
+        print(f"   > Searching web for: {query}...")
         tavily = TavilySearchResults(max_results=2)
-        raw_results = tavily.invoke(query)
+        try:
+            raw_results = tavily.invoke(query)
+        except Exception as e:
+            return f"Error performing web search: {e}"
         
-        #Strip all extraneous data (signature, extras, images, raw_content, etc.)
+        # Strip all extraneous data
         clean_results = []
         texts_to_index = []
         
         if isinstance(raw_results, list):
             for item in raw_results:
-                #Only extract url and content, discard everything else
                 if isinstance(item, dict):
                     url = item.get("url", "")
                     content = item.get("content", "")
                     
-                    #Only include if we have actual content
                     if url and content:
-                        #Limit content to avoid overwhelming the LLM
                         content_limited = content[:500]
                         clean_results.append({
                             "url": url,
                             "content": content_limited
                         })
-                        #Store for indexing with source attribution
+                        # Store for indexing with source attribution
                         texts_to_index.append(f"Web Search Result - Query: {query}\nSource: {url}\nContent: {content_limited}")
         
-        #Index the web results to Pinecone for future searches
+        # Index the new results to Pinecone for future searches
         if texts_to_index:
             try:
-                embeddings = GoogleGenerativeAIEmbeddings(
-                    model="models/gemini-embedding-001",
-                    google_api_key=os.getenv("GOOGLE_API_KEY")
-                )
                 vector_store.add_texts(texts_to_index)
-                print(f"Indexed {len(texts_to_index)} web results to Pinecone")
+                print(f"   > Indexed {len(texts_to_index)} new web results to Pinecone.")
             except Exception as e:
-                print(f"Warning: Could not index web results: {e}")
+                print(f"   > Warning: Could not index web results: {e}")
         
-        #Return as plain formatted text (not dict) to prevent metadata leakage
         if clean_results:
             output_lines = []
             for result in clean_results:
