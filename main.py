@@ -75,11 +75,10 @@ def ingest_data(notes):
     """
     print(f"\nIngesting {len(notes)} total notes...")
     
-    ### LIVE CODING SECTION 1: PINECONE VECTOR DB SETUP ###
-    # Goal: Connect to Pinecone, create an index if needed, and store vectors.
+    ###LIVE CODING SECTION 2: PINECONE VECTOR DB SETUP ###
+    #Goal: Connect to Pinecone, create an index if needed, and store vectors.
     # ---------------------------------------------------------
-    
-    # [CODE REMOVED HERE]
+
     
     # ---------------------------------------------------------
     print("Notes stored in Pinecone (persistent across sessions)")
@@ -114,11 +113,10 @@ def setup_agent(vector_store):
     """Setup the Agent with Memory capabilities and CLEAN search."""
     print("\nInitializing Agent...")
 
-    ### LIVE CODING SECTION 2: LANGCHAIN AGENT CONSTRUCTION ###
-    # Goal: Define the LLM (Gemini), the Tools (Retriever + Search), and the Prompt.
+    ### LIVE CODING SECTION 1: LANGCHAIN AGENT CONSTRUCTION ###
+    #Goal: Define the LLM (Gemini), the Tools (Retriever + Search), and the Prompt.
     # ---------------------------------------------------------
 
-    # [CODE REMOVED HERE]
 
     # ---------------------------------------------------------
     
@@ -157,7 +155,6 @@ def main():
         # Goal: Create the 'while True' loop that takes user input and calls the agent.
         # ---------------------------------------------------------
 
-        # [CODE REMOVED HERE]
 
         # ---------------------------------------------------------
 
