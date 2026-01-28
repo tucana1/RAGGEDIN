@@ -139,25 +139,33 @@ def clean_agent_output(output):
     else:
         text = str(output)
     
-    #Split by common markers
+    #Remove the 'extras' dictionary block entirely (contains signature)
+    #This regex removes {'type': 'text', 'text': '...', 'extras': {...}} patterns
+    text = re.sub(r"\{'type':\s*'text',\s*'text':\s*'([^']*)',\s*'extras':\s*\{[^}]*\},\s*'index':\s*\d+\}", r'\1', text)
+    
+    #Also handle if the structure is slightly different
+    text = re.sub(r"'extras':\s*\{[^}]*signature[^}]*\}", '', text)
+    
+    #Remove long base64 strings (signature data)
     lines = text.split('\n')
     cleaned_lines = []
     
     for line in lines:
-        #Skip lines containing signature indicators
-        if any(marker in line for marker in ['signature', 'extras', 'CiIB', 'gEBc']):
+        #Skip lines that are just long base64-like strings (>200 chars of base64)
+        if len(line) > 200 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in line.replace('\n', '')):
             continue
-        #Skip lines that are just base64-like strings
-        if len(line) > 100 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in line.replace('\n', '')):
+        #Skip lines with signature/extras markers
+        if any(marker in line for marker in ['signature', 'extras:', "'extras'"]):
             continue
         cleaned_lines.append(line)
     
     #Join back and clean up excessive whitespace
     result = '\n'.join(cleaned_lines).strip()
     
-    #Remove any remaining encoded signature blocks
-    result = re.sub(r"'signature':\s*'[^']*'", '', result)
-    result = re.sub(r'"signature":\s*"[^"]*"', '', result)
+    #Clean up any remaining dict syntax artifacts
+    result = re.sub(r"\},\s*\[", '[\n', result)
+    result = re.sub(r"\{\s*'type'", '', result)
+    result = re.sub(r"'index':\s*\d+\s*\}", '', result)
     
     return result
 
@@ -168,7 +176,7 @@ def setup_agent(vector_store):
     
     #Use the specific model requested
     llm = ChatGoogleGenerativeAI(
-        model="gemini-3-flash-preview",
+        model="gemini-2.5-flash",
         temperature=0.7,
         convert_system_message_to_human=True
     )
