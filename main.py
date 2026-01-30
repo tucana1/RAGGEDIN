@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 Interactive RAG Agent for LinkedIn (Gemini Version).
-- Scans folder for ANY file matching 'notes*.txt'
-- Auto-generates a post on startup
-- Stores data persistently in Pinecone across sessions
+WORKSHOP EDITION: Fill in the [TODO] sections to build the agent.
 """
 
 import os
@@ -12,20 +10,21 @@ import sys
 import time
 from dotenv import load_dotenv
 
-#CORE LANGCHAIN & GEMINI
+# CORE LANGCHAIN & GEMINI
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_pinecone import PineconeVectorStore
 
-#TOOLS & AGENTS
+# TOOLS & AGENTS
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.tools import create_retriever_tool, tool
+# PRESERVED USER IMPORT:
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 
-#PROMPTS & MESSAGES
+# PROMPTS & MESSAGES
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
-#PINECONE
+# PINECONE
 from pinecone import Pinecone, ServerlessSpec
 
 
@@ -75,12 +74,33 @@ def ingest_data(notes):
     """
     print(f"\nIngesting {len(notes)} total notes...")
     
-    ###LIVE CODING SECTION 2: PINECONE VECTOR DB SETUP ###
-    #Goal: Connect to Pinecone, create an index if needed, and store vectors.
-    # ---------------------------------------------------------
-
+    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+    index_name = "linkedin-agent-gemini-v2"
     
-    # ---------------------------------------------------------
+    # Check if index exists
+    existing_indexes = [i.name for i in pc.list_indexes()]
+    
+    # [TODO 1]: CREATE PINECONE INDEX
+    # Check if index_name is NOT in existing_indexes.
+    # If not, create it with dimension=3072, metric="cosine", and the ServerlessSpec.
+    # if index_name not in existing_indexes:
+        # print(f"Creating index: {index_name}")
+        # pc.create_index(...)
+    
+    # Wait for index to be ready
+    while not pc.describe_index(index_name).status['ready']:
+        time.sleep(1)
+    
+    # [TODO 2]: INITIALIZE GEMINI EMBEDDINGS
+    # Initialize GoogleGenerativeAIEmbeddings with model="models/gemini-embedding-001"
+    # embeddings = ...
+    embeddings = None
+    
+    # [TODO 3]: CREATE VECTOR STORE
+    # Use PineconeVectorStore.from_texts to store the notes.
+    # vector_store = ...
+    vector_store = None
+
     print("Notes stored in Pinecone (persistent across sessions)")
     return vector_store
 
@@ -93,34 +113,83 @@ def clean_agent_output(output):
     else:
         text = str(output)
     
+    text = re.sub(r"\{'type':\s*'text',\s*'text':\s*'([^']*)',\s*'extras':\s*\{[^}]*\},\s*'index':\s*\d+\}", r'\1', text)
+    text = re.sub(r"'extras':\s*\{[^}]*signature[^}]*\}", '', text)
+    
     lines = text.split('\n')
     cleaned_lines = []
     
     for line in lines:
-        if any(marker in line for marker in ['signature', 'extras', 'CiIB', 'gEBc']):
+        if len(line) > 200 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in line.replace('\n', '')):
             continue
-        if len(line) > 100 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in line.replace('\n', '')):
+        if any(marker in line for marker in ['signature', 'extras:', "'extras'"]):
             continue
         cleaned_lines.append(line)
     
     result = '\n'.join(cleaned_lines).strip()
-    result = re.sub(r"'signature':\s*'[^']*'", '', result)
-    result = re.sub(r'"signature":\s*"[^"]*"', '', result)
+    result = re.sub(r"\},\s*\[", '[\n', result)
+    result = re.sub(r"\{\s*'type'", '', result)
+    result = re.sub(r"'index':\s*\d+\s*\}", '', result)
+    
     return result
 
 
 def setup_agent(vector_store):
     """Setup the Agent with Memory capabilities and CLEAN search."""
     print("\nInitializing Agent...")
-
-    ### LIVE CODING SECTION 1: LANGCHAIN AGENT CONSTRUCTION ###
-    #Goal: Define the LLM (Gemini), the Tools (Retriever + Search), and the Prompt.
-    # ---------------------------------------------------------
-
-
-    # ---------------------------------------------------------
     
-    return AgentExecutor(agent=agent, tools=tools, verbose=True)
+    # [TODO 4]: INITIALIZE LLM
+    # Initialize ChatGoogleGenerativeAI with model="gemini-2.5-flash" and temperature=0.7
+    # llm = ...
+    llm = None
+    
+    # [TODO 5]: CREATE RETRIEVER TOOL
+    # Create the tool to search notes. Use vector_store.as_retriever with search_kwargs={"k": 5}
+    # retriever_tool = ...
+    retriever_tool = None
+    
+    @tool
+    def search_web(query: str):
+        """Search web for recent news. Checks Pinecone first with strict matching, then searches web."""
+        
+        # 1. DEFINE THRESHOLD
+        SCORE_THRESHOLD = 0.80 
+
+        # 2. SEARCH WITH SCORE
+        results_with_scores = vector_store.similarity_search_with_score(query, k=1)
+        
+        if results_with_scores:
+            best_doc, best_score = results_with_scores[0]
+            print(f"   > Cache Check: '{query}' | Best Score: {best_score:.4f}")
+            
+            if best_score >= SCORE_THRESHOLD:
+                print("   > High confidence match found in cache. Skipping web search.")
+                return f"Cached (Score {best_score:.2f}): {best_doc.page_content}"
+
+        # [TODO 6]: FALLBACK TO WEB SEARCH
+        # Initialize TavilySearchResults(max_results=2) and invoke with the query
+        print(f"   > Searching web for: {query}...")
+        # tavily = ...
+        # raw_results = ...
+        
+        # (Mock return for workshop if TODO is empty)
+        return "Web search placeholder"
+
+    tools = [retriever_tool, search_web]
+    
+    # [TODO 7]: CREATE PROMPT TEMPLATE
+    # Define the ChatPromptTemplate with system message, chat_history, input, and agent_scratchpad
+    # prompt = ...
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "Placeholder System Prompt"),
+        ("human", "{input}"),
+    ])
+    
+    # [TODO 8]: CREATE AGENT EXECUTOR
+    # Use create_tool_calling_agent and return AgentExecutor(..., verbose=True)
+    # agent = ...
+    # return ...
+    return None
 
 
 def main():
@@ -131,32 +200,57 @@ def main():
     
     try:
         load_environment()
+        
+        # Load notes
         notes = load_all_notes()
+        
+        # Ingest
         vector_store = ingest_data(notes)
+        
+        # Setup Agent
         agent_executor = setup_agent(vector_store)
         
-        #AUTO-START
+        # AUTO-START
         print("\nAUTOMATIC STARTUP: Generating proposal based on your notes...")
         chat_history = [] 
+        
         initial_prompt = "Look through my notes and create a high-impact LinkedIn post proposal based on the most interesting idea you find."
         
-        # Initial invocation
-        response = agent_executor.invoke({
-            "input": initial_prompt,
-            "chat_history": chat_history
-        })
-        clean_output = clean_agent_output(response["output"])
+        # [TODO 9]: INVOKE THE AGENT
+        # response = agent_executor.invoke(...)
+        # output_text = response["output"]
+        
+        # (Mock output for workshop before TODO is filled)
+        output_text = "Agent not ready yet."
+        
+        clean_output = clean_agent_output(output_text)
         print(f"\nAGENT:\n{clean_output}\n")
         
         chat_history.append(HumanMessage(content=initial_prompt))
         chat_history.append(AIMessage(content=clean_output))
         
-        ### LIVE CODING SECTION 3: INTERACTIVE EXECUTION LOOP ###
-        # Goal: Create the 'while True' loop that takes user input and calls the agent.
-        # ---------------------------------------------------------
-
-
-        # ---------------------------------------------------------
+        # Interactive Loop
+        while True:
+            user_input = input("\nTopic or Feedback > ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in ["exit", "quit"]:
+                print("Goodbye!")
+                break
+            
+            print("\nThinking...")
+            
+            response = agent_executor.invoke({
+                "input": user_input,
+                "chat_history": chat_history
+            })
+            
+            output_text = response["output"]
+            clean_output = clean_agent_output(output_text)
+            print(f"\nAGENT:\n{clean_output}\n")
+            
+            chat_history.append(HumanMessage(content=user_input))
+            chat_history.append(AIMessage(content=clean_output))
 
     except Exception as e:
         print(f"\nError: {e}")
