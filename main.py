@@ -80,7 +80,7 @@ def ingest_data(notes):
     # Check if index exists
     existing_indexes = [i.name for i in pc.list_indexes()]
     
-    # [TODO 1]: CREATE PINECONE INDEX
+    # [TODO 6]: CREATE PINECONE INDEX
     # Check if index_name is NOT in existing_indexes.
     # If not, create it with dimension=3072, metric="cosine", and the ServerlessSpec.
     # if index_name not in existing_indexes:
@@ -91,12 +91,12 @@ def ingest_data(notes):
     while not pc.describe_index(index_name).status['ready']:
         time.sleep(1)
     
-    # [TODO 2]: INITIALIZE GEMINI EMBEDDINGS
+    # [TODO 7]: INITIALIZE GEMINI EMBEDDINGS
     # Initialize GoogleGenerativeAIEmbeddings with model="models/gemini-embedding-001"
     # embeddings = ...
     embeddings = None
     
-    # [TODO 3]: CREATE VECTOR STORE
+    # [TODO 8]: CREATE VECTOR STORE
     # Use PineconeVectorStore.from_texts to store the notes.
     # vector_store = ...
     vector_store = None
@@ -138,12 +138,12 @@ def setup_agent(vector_store):
     """Setup the Agent with Memory capabilities and CLEAN search."""
     print("\nInitializing Agent...")
     
-    # [TODO 4]: INITIALIZE LLM
+    # [TODO 1]: INITIALIZE LLM
     # Initialize ChatGoogleGenerativeAI with model="gemini-2.5-flash" and temperature=0.7
     # llm = ...
     llm = None
     
-    # [TODO 5]: CREATE RETRIEVER TOOL
+    # [TODO 9]: CREATE RETRIEVER TOOL
     # Create the tool to search notes. Use vector_store.as_retriever with search_kwargs={"k": 5}
     # retriever_tool = ...
     retriever_tool = None
@@ -166,7 +166,7 @@ def setup_agent(vector_store):
                 print("   > High confidence match found in cache. Skipping web search.")
                 return f"Cached (Score {best_score:.2f}): {best_doc.page_content}"
 
-        # [TODO 6]: FALLBACK TO WEB SEARCH
+        # [TODO 2]: FALLBACK TO WEB SEARCH
         # Initialize TavilySearchResults(max_results=2) and invoke with the query
         print(f"   > Searching web for: {query}...")
         # tavily = ...
@@ -177,7 +177,7 @@ def setup_agent(vector_store):
 
     tools = [retriever_tool, search_web]
     
-    # [TODO 7]: CREATE PROMPT TEMPLATE
+    # [TODO 3]: CREATE PROMPT TEMPLATE
     # Define the ChatPromptTemplate with system message, chat_history, input, and agent_scratchpad
     # prompt = ...
     prompt = ChatPromptTemplate.from_messages([
@@ -185,7 +185,7 @@ def setup_agent(vector_store):
         ("human", "{input}"),
     ])
     
-    # [TODO 8]: CREATE AGENT EXECUTOR
+    # [TODO 4]: CREATE AGENT EXECUTOR
     # Use create_tool_calling_agent and return AgentExecutor(..., verbose=True)
     # agent = ...
     # return ...
@@ -216,11 +216,10 @@ def main():
         
         initial_prompt = "Look through my notes and create a high-impact LinkedIn post proposal based on the most interesting idea you find."
         
-        # [TODO 9]: INVOKE THE AGENT
+        # [TODO 5]: INVOKE THE AGENT
         # response = agent_executor.invoke(...)
         # output_text = response["output"]
         
-        # (Mock output for workshop before TODO is filled)
         output_text = "Agent not ready yet."
         
         clean_output = clean_agent_output(output_text)
